@@ -2,56 +2,73 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Ultimate AI Trading Bot v2</title>
+<title>ETH Autonomous AI Bot</title>
 <style>
-    body{background:#020617;color:white;font-family:Arial;text-align:center;margin:0;padding:20px}
-    select,button,input{padding:10px;margin:5px;border-radius:8px;border:none;background:#1e293b;color:white;cursor:pointer}
-    button:hover{background:#334155}
-    canvas{background:#020617;border:1px solid #334155;margin-top:10px;display:block;margin-left:auto;margin-right:auto}
-    .stats-container{display:flex;justify-content:center;gap:20px;margin:15px;font-weight:bold}
-    .green{color:#22c55e}
-    .red{color:#ef4444}
-    #panel{background:#0f172a;padding:15px;border-radius:12px;display:inline-block;min-width:600px}
+    body{background:#020617;color:white;font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;margin:0;padding:20px}
+    .container{max-width:1000px;margin:auto}
+    .dashboard{display:grid;grid-template-columns:repeat(4, 1fr);gap:15px;margin-bottom:20px}
+    .card{background:#0f172a;padding:15px;border-radius:12px;border:1px solid #1e293b;text-align:center}
+    .card h3{margin:0;font-size:0.8em;color:#94a3b8;text-transform:uppercase}
+    .card p{margin:10px 0 0;font-size:1.4em;font-weight:bold}
+    
+    canvas{background:#020617;border:1px solid #334155;border-radius:8px;width:100%;height:300px;margin-bottom:20px}
+    
+    .history-container{background:#0f172a;border-radius:12px;border:1px solid #1e293b;padding:15px;text-align:left}
+    table{width:100%;border-collapse:collapse;margin-top:10px}
+    th{color:#94a3b8;font-size:0.85em;text-align:left;padding:10px;border-bottom:1px solid #1e293b}
+    td{padding:10px;font-size:0.9em;border-bottom:1px solid #020617}
+    
+    .green{color:#22c55e} .red{color:#ef4444}
+    .btn-start{background:#22c55e;color:white;border:none;padding:10px 25px;border-radius:8px;cursor:pointer;font-weight:bold}
+    .btn-stop{background:#ef4444;color:white;border:none;padding:10px 25px;border-radius:8px;cursor:pointer;font-weight:bold}
+    .controls{margin-bottom:20px}
 </style>
 </head>
 <body>
 
-<h2>ULTIMATE AI TRADING BOT (RSI + ATR + TRAILING)</h2>
-
-<div id="controls">
-    Pair <select id="symbol">
-        <option>BTCUSDT</option><option>ETHUSDT</option><option>SOLUSDT</option>
-    </select>
-    TF <select id="tf">
-        <option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option>
-    </select>
-    Risk % <input type="range" min="1" max="5" value="2" id="risk">
-    <button onclick="start()" style="background:#22c55e">START BOT</button>
-    <button onclick="stop()" style="background:#ef4444">STOP BOT</button>
-</div>
-
-<div id="panel">
-    <div class="stats-container">
-        <div>Balance: $<span id="bal-val">10000</span></div>
-        <div>Win Rate: <span id="wr-val">0</span>%</div>
-        <div>Status: <span id="status-val">IDLE</span></div>
+<div class="container">
+    <h2>ETH/USDT Autonomous Bot (15m)</h2>
+    
+    <div class="controls">
+        <button id="startBtn" class="btn-start" onclick="start()">START BOT</button>
+        <button id="stopBtn" class="btn-stop" onclick="stop()" style="display:none">STOP BOT</button>
+        <span id="status" style="margin-left:15px;color:#94a3b8">Status: IDLE</span>
     </div>
-    <div id="log-val" style="font-size:0.9em;color:#94a3b8">Waiting for start...</div>
-</div>
 
-<canvas id="chart" width="900" height="300"></canvas>
-<canvas id="equity" width="900" height="100"></canvas>
+    <div class="dashboard">
+        <div class="card"><h3>Balance</h3><p id="bal-val">$10,000.00</p></div>
+        <div class="card"><h3>Total P/L</h3><p id="pl-val">$0.00</p></div>
+        <div class="card"><h3>Win Rate</h3><p id="wr-val">0%</p></div>
+        <div class="card"><h3>Open P/L</h3><p id="open-pl" class="green">$0.00</p></div>
+    </div>
+
+    <canvas id="chartCanvas"></canvas>
+
+    <div class="history-container">
+        <h3>Trade History</h3>
+        <table id="historyTable">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Entry</th>
+                    <th>Exit</th>
+                    <th>Result</th>
+                    <th>Time</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+</div>
 
 <script>
-let run = false, balance = 10000, pos = null, wins = 0, loss = 0, equity = [10000];
+let run = false, balance = 10000, initialBalance = 10000, pos = null;
+let wins = 0, loss = 0, tradeHistory = [];
 
-//---------------- INDICATORS
-const ema = (a, p) => {
-    let k = 2/(p+1), e = a[0];
-    for(let i=1; i<a.length; i++) e = a[i]*k + e*(1-k);
-    return e;
-};
+const symbol = "ETHUSDT";
+const interval = "15m";
 
+// Indicators
 const rsi = (c, p=14) => {
     let g=0, l=0;
     for(let i=c.length-p; i<c.length; i++){
@@ -62,96 +79,115 @@ const rsi = (c, p=14) => {
 
 const atr = (h, l, c, p=14) => {
     let sum = 0;
-    for(let i=c.length-p; i<c.length; i++){
-        sum += Math.max(h[i]-l[i], Math.abs(h[i]-c[i-1]), Math.abs(l[i]-c[i-1]));
-    }
+    for(let i=c.length-p; i<c.length; i++) sum += Math.max(h[i]-l[i], Math.abs(h[i]-c[i-1]), Math.abs(l[i]-c[i-1]));
     return sum/p;
 };
 
-//---------------- DATA FETCH
-async function fetchData() {
-    let r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol.value}&interval=${tf.value}&limit=100`);
-    return await r.json();
-}
-
-//---------------- RENDERERS
-function drawChart(data, p) {
-    let ctx=chart.getContext("2d"); ctx.clearRect(0,0,900,300);
-    let max=Math.max(...data), min=Math.min(...data), range=max-min;
-    data.forEach((v,i)=>{
-        let x=i*(900/data.length), y=300-((v-min)/range)*300;
-        ctx.fillStyle = (i === data.length-1 && pos) ? (pos.t=="BUY"?"#22c55e":"#ef4444") : "#334155";
-        ctx.fillRect(x,y,3,3);
-    });
-}
-
-//---------------- MAIN LOOP
 async function loop() {
     if(!run) return;
 
     try {
-        let raw = await fetchData();
-        let closes = raw.map(x=>+x[4]), highs = raw.map(x=>+x[2]), lows = raw.map(x=>+x[3]);
-        let price = closes.at(-1), currentRsi = rsi(closes), currentAtr = atr(highs,lows,closes);
+        const resp = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=100`);
+        const data = await resp.json();
         
-        drawChart(closes, price);
+        let closes = data.map(x=>+x[4]), highs = data.map(x=>+x[2]), lows = data.map(x=>+x[3]);
+        let price = closes.at(-1), currentRsi = rsi(closes), currentAtr = atr(highs, lows, closes);
+        
+        draw(closes);
 
         if(!pos) {
-            let ai = ((closes.at(-1) - closes.at(-10)) / (Math.max(...closes.slice(-10)) - Math.min(...closes.slice(-10)))) * 100;
-            let riskAmt = (balance * (risk.value/100));
-            
-            // ENTRY LOGIC
-            if(ai > 15 && currentRsi < 65) {
-                pos = { t:"BUY", e:price, sl: price - (currentAtr * 2.5), tp: price + (currentAtr * 4), qty: riskAmt/price };
-                updateLog(`LONG Entered @ ${price.toFixed(2)}`);
-            } else if(ai < -15 && currentRsi > 35) {
-                pos = { t:"SELL", e:price, sl: price + (currentAtr * 2.5), tp: price - (currentAtr * 4), qty: riskAmt/price };
-                updateLog(`SHORT Entered @ ${price.toFixed(2)}`);
+            // Signal Logic
+            let ai = (closes.at(-1) - closes.at(-10));
+            if(ai > 0 && currentRsi < 40) { // Oversold bounce
+                openPosition("BUY", price, currentAtr);
+            } else if(ai < 0 && currentRsi > 60) { // Overbought rejection
+                openPosition("SELL", price, currentAtr);
             }
-            status_val.innerHTML = "SEARCHING...";
+            document.getElementById('status').innerHTML = "Status: SCANNING MARKET...";
+            document.getElementById('open-pl').innerHTML = "$0.00";
         } else {
-            // TRAILING STOP & EXIT LOGIC
-            let pnl = (price - pos.e) * (pos.t=="BUY"?1:-1) * pos.qty;
-            
-            // Trailing Stop: Move SL up if price moves in favor (for Buy)
-            if(pos.t == "BUY" && price > pos.e + currentAtr) {
-                let newSl = price - (currentAtr * 1.5);
-                if(newSl > pos.sl) pos.sl = newSl; 
-            }
-            if(pos.t == "SELL" && price < pos.e - currentAtr) {
-                let newSl = price + (currentAtr * 1.5);
-                if(newSl < pos.sl) pos.sl = newSl;
-            }
+            // Managed Execution
+            let pnl = (price - pos.entry) * (pos.type=="BUY"?1:-1) * pos.qty;
+            document.getElementById('open-pl').innerHTML = (pnl >= 0 ? '+' : '') + "$" + pnl.toFixed(2);
+            document.getElementById('open-pl').className = pnl >= 0 ? 'green' : 'red';
 
-            let hitTp = pos.t=="BUY" ? price >= pos.tp : price <= pos.tp;
-            let hitSl = pos.t=="BUY" ? price <= pos.sl : price >= pos.sl;
-
-            if(hitTp || hitSl) {
-                balance += pnl;
-                equity.push(balance);
-                pnl > 0 ? wins++ : loss++;
-                updateLog(`${pnl > 0 ? 'PROFIT' : 'LOSS'} Closed: $${pnl.toFixed(2)}`);
-                pos = null;
+            if(price >= pos.tp || price <= pos.sl) {
+                closePosition(price, pnl);
             }
-            status_val.innerHTML = `IN TRADE (${pnl > 0 ? '+' : ''}${pnl.toFixed(2)})`;
+            document.getElementById('status').innerHTML = `Status: IN ${pos.type} TRADE`;
         }
-
-        // Update Panel
-        bal_val.innerHTML = balance.toFixed(2);
-        wr_val.innerHTML = (wins+loss > 0) ? ((wins/(wins+loss))*100).toFixed(1) : 0;
-        
-    } catch(e) { console.log("Connection Error"); }
+    } catch(e) { console.error("Update Error"); }
     
-    setTimeout(loop, 3000);
+    setTimeout(loop, 4000);
 }
 
-function updateLog(msg) { document.getElementById("log-val").innerHTML = msg; }
-function start() { run = true; updateLog("Bot Started..."); loop(); }
-function stop() { run = false; updateLog("Bot Stopped."); status_val.innerHTML = "IDLE"; }
+function openPosition(type, price, volatility) {
+    let risk = balance * 0.02;
+    pos = {
+        type: type,
+        entry: price,
+        qty: risk / (volatility * 2),
+        sl: type == "BUY" ? price - (volatility * 2) : price + (volatility * 2),
+        tp: type == "BUY" ? price + (volatility * 3) : price - (volatility * 3),
+        time: new Date().toLocaleTimeString()
+    };
+}
 
-let bal_val = document.getElementById("bal-val");
-let wr_val = document.getElementById("wr-val");
-let status_val = document.getElementById("status-val");
+function closePosition(price, pnl) {
+    balance += pnl;
+    let trade = { ...pos, exit: price, pnl: pnl, closeTime: new Date().toLocaleTimeString() };
+    tradeHistory.unshift(trade);
+    pnl > 0 ? wins++ : loss++;
+    pos = null;
+    updateUI();
+}
+
+function updateUI() {
+    document.getElementById('bal-val').innerHTML = "$" + balance.toFixed(2);
+    document.getElementById('pl-val').innerHTML = (balance - initialBalance >= 0 ? '+' : '') + "$" + (balance - initialBalance).toFixed(2);
+    document.getElementById('pl-val').className = (balance - initialBalance >= 0) ? 'green' : 'red';
+    document.getElementById('wr-val').innerHTML = (wins+loss > 0) ? ((wins/(wins+loss))*100).toFixed(0) + "%" : "0%";
+    
+    let html = "";
+    tradeHistory.slice(0, 10).forEach(t => {
+        html += `<tr>
+            <td class="${t.type=='BUY'?'green':'red'}">${t.type}</td>
+            <td>${t.entry.toFixed(2)}</td>
+            <td>${t.exit.toFixed(2)}</td>
+            <td class="${t.pnl>=0?'green':'red'}">${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</td>
+            <td>${t.closeTime}</td>
+        </tr>`;
+    });
+    document.querySelector("#historyTable tbody").innerHTML = html;
+}
+
+function draw(data) {
+    const canvas = document.getElementById('chartCanvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    let max=Math.max(...data), min=Math.min(...data), range=max-min;
+    ctx.beginPath();
+    ctx.strokeStyle = "#3b82f6";
+    data.forEach((v,i) => {
+        let x = i * (canvas.width/data.length);
+        let y = canvas.height - ((v-min)/range) * canvas.height;
+        i == 0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    });
+    ctx.stroke();
+}
+
+function start() { 
+    run = true; 
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('stopBtn').style.display = 'inline-block';
+    loop(); 
+}
+function stop() { 
+    run = false; 
+    document.getElementById('startBtn').style.display = 'inline-block';
+    document.getElementById('stopBtn').style.display = 'none';
+    document.getElementById('status').innerHTML = "Status: IDLE";
+}
 </script>
 </body>
 </html>
