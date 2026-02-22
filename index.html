@@ -2,197 +2,156 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Ultimate AI Trading Bot</title>
+<title>Ultimate AI Trading Bot v2</title>
 <style>
-body{background:#020617;color:white;font-family:Arial;text-align:center}
-select,button,input{padding:7px;margin:4px;border-radius:8px;border:none}
-canvas{background:#020617;border:1px solid #334155;margin-top:8px}
-.green{color:#22c55e}
-.red{color:#ef4444}
+    body{background:#020617;color:white;font-family:Arial;text-align:center;margin:0;padding:20px}
+    select,button,input{padding:10px;margin:5px;border-radius:8px;border:none;background:#1e293b;color:white;cursor:pointer}
+    button:hover{background:#334155}
+    canvas{background:#020617;border:1px solid #334155;margin-top:10px;display:block;margin-left:auto;margin-right:auto}
+    .stats-container{display:flex;justify-content:center;gap:20px;margin:15px;font-weight:bold}
+    .green{color:#22c55e}
+    .red{color:#ef4444}
+    #panel{background:#0f172a;padding:15px;border-radius:12px;display:inline-block;min-width:600px}
 </style>
 </head>
 <body>
 
-<h2>ULTIMATE AI TRADING BOT</h2>
+<h2>ULTIMATE AI TRADING BOT (RSI + ATR + TRAILING)</h2>
 
-Pair
-<select id="symbol">
-<option>BTCUSDT</option>
-<option>ETHUSDT</option>
-<option>SOLUSDT</option>
-<option>BNBUSDT</option>
-</select>
+<div id="controls">
+    Pair <select id="symbol">
+        <option>BTCUSDT</option><option>ETHUSDT</option><option>SOLUSDT</option>
+    </select>
+    TF <select id="tf">
+        <option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option>
+    </select>
+    Risk % <input type="range" min="1" max="5" value="2" id="risk">
+    <button onclick="start()" style="background:#22c55e">START BOT</button>
+    <button onclick="stop()" style="background:#ef4444">STOP BOT</button>
+</div>
 
-TF
-<select id="tf">
-<option value="1m">1m</option>
-<option value="5m">5m</option>
-<option value="15m">15m</option>
-<option value="1h">1h</option>
-</select>
-
-Risk %
-<input type="range" min="1" max="10" value="2" id="risk">
-
-<button onclick="start()">START</button>
-<button onclick="stop()">STOP</button>
-
-<div id="panel"></div>
+<div id="panel">
+    <div class="stats-container">
+        <div>Balance: $<span id="bal-val">10000</span></div>
+        <div>Win Rate: <span id="wr-val">0</span>%</div>
+        <div>Status: <span id="status-val">IDLE</span></div>
+    </div>
+    <div id="log-val" style="font-size:0.9em;color:#94a3b8">Waiting for start...</div>
+</div>
 
 <canvas id="chart" width="900" height="300"></canvas>
-<canvas id="equity" width="900" height="150"></canvas>
+<canvas id="equity" width="900" height="100"></canvas>
 
 <script>
-let run=false
-let balance=10000
-let pos=null
-let wins=0,loss=0
-let equity=[balance]
+let run = false, balance = 10000, pos = null, wins = 0, loss = 0, equity = [10000];
 
-//---------------- EMA
-function ema(a,p){
-let k=2/(p+1),e=a[0]
-for(let i=1;i<a.length;i++) e=a[i]*k+e*(1-k)
-return e
+//---------------- INDICATORS
+const ema = (a, p) => {
+    let k = 2/(p+1), e = a[0];
+    for(let i=1; i<a.length; i++) e = a[i]*k + e*(1-k);
+    return e;
+};
+
+const rsi = (c, p=14) => {
+    let g=0, l=0;
+    for(let i=c.length-p; i<c.length; i++){
+        let d = c[i]-c[i-1]; d>0 ? g+=d : l-=d;
+    }
+    return 100 - (100/(1+(g/l)));
+};
+
+const atr = (h, l, c, p=14) => {
+    let sum = 0;
+    for(let i=c.length-p; i<c.length; i++){
+        sum += Math.max(h[i]-l[i], Math.abs(h[i]-c[i-1]), Math.abs(l[i]-c[i-1]));
+    }
+    return sum/p;
+};
+
+//---------------- DATA FETCH
+async function fetchData() {
+    let r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol.value}&interval=${tf.value}&limit=100`);
+    return await r.json();
 }
 
-//---------------- FETCH
-async function candles(){
-let r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol.value}&interval=${tf.value}&limit=200`)
-return await r.json()
+//---------------- RENDERERS
+function drawChart(data, p) {
+    let ctx=chart.getContext("2d"); ctx.clearRect(0,0,900,300);
+    let max=Math.max(...data), min=Math.min(...data), range=max-min;
+    data.forEach((v,i)=>{
+        let x=i*(900/data.length), y=300-((v-min)/range)*300;
+        ctx.fillStyle = (i === data.length-1 && pos) ? (pos.t=="BUY"?"#22c55e":"#ef4444") : "#334155";
+        ctx.fillRect(x,y,3,3);
+    });
 }
 
-//---------------- TREND REGIME
-function regime(c){
-let e50=ema(c.slice(-60),50)
-let e200=ema(c,200)
-if(Math.abs(e50-e200)<c.at(-1)*0.002) return "RANGE"
-return e50>e200?"TREND UP":"TREND DOWN"
+//---------------- MAIN LOOP
+async function loop() {
+    if(!run) return;
+
+    try {
+        let raw = await fetchData();
+        let closes = raw.map(x=>+x[4]), highs = raw.map(x=>+x[2]), lows = raw.map(x=>+x[3]);
+        let price = closes.at(-1), currentRsi = rsi(closes), currentAtr = atr(highs,lows,closes);
+        
+        drawChart(closes, price);
+
+        if(!pos) {
+            let ai = ((closes.at(-1) - closes.at(-10)) / (Math.max(...closes.slice(-10)) - Math.min(...closes.slice(-10)))) * 100;
+            let riskAmt = (balance * (risk.value/100));
+            
+            // ENTRY LOGIC
+            if(ai > 15 && currentRsi < 65) {
+                pos = { t:"BUY", e:price, sl: price - (currentAtr * 2.5), tp: price + (currentAtr * 4), qty: riskAmt/price };
+                updateLog(`LONG Entered @ ${price.toFixed(2)}`);
+            } else if(ai < -15 && currentRsi > 35) {
+                pos = { t:"SELL", e:price, sl: price + (currentAtr * 2.5), tp: price - (currentAtr * 4), qty: riskAmt/price };
+                updateLog(`SHORT Entered @ ${price.toFixed(2)}`);
+            }
+            status_val.innerHTML = "SEARCHING...";
+        } else {
+            // TRAILING STOP & EXIT LOGIC
+            let pnl = (price - pos.e) * (pos.t=="BUY"?1:-1) * pos.qty;
+            
+            // Trailing Stop: Move SL up if price moves in favor (for Buy)
+            if(pos.t == "BUY" && price > pos.e + currentAtr) {
+                let newSl = price - (currentAtr * 1.5);
+                if(newSl > pos.sl) pos.sl = newSl; 
+            }
+            if(pos.t == "SELL" && price < pos.e - currentAtr) {
+                let newSl = price + (currentAtr * 1.5);
+                if(newSl < pos.sl) pos.sl = newSl;
+            }
+
+            let hitTp = pos.t=="BUY" ? price >= pos.tp : price <= pos.tp;
+            let hitSl = pos.t=="BUY" ? price <= pos.sl : price >= pos.sl;
+
+            if(hitTp || hitSl) {
+                balance += pnl;
+                equity.push(balance);
+                pnl > 0 ? wins++ : loss++;
+                updateLog(`${pnl > 0 ? 'PROFIT' : 'LOSS'} Closed: $${pnl.toFixed(2)}`);
+                pos = null;
+            }
+            status_val.innerHTML = `IN TRADE (${pnl > 0 ? '+' : ''}${pnl.toFixed(2)})`;
+        }
+
+        // Update Panel
+        bal_val.innerHTML = balance.toFixed(2);
+        wr_val.innerHTML = (wins+loss > 0) ? ((wins/(wins+loss))*100).toFixed(1) : 0;
+        
+    } catch(e) { console.log("Connection Error"); }
+    
+    setTimeout(loop, 3000);
 }
 
-//---------------- LIQUIDITY SWEEP
-function sweep(c){
-let h=Math.max(...c.slice(-20))
-let l=Math.min(...c.slice(-20))
-let p=c.at(-1)
-if(p>h) return "BUY SWEEP"
-if(p<l) return "SELL SWEEP"
-return null
-}
+function updateLog(msg) { document.getElementById("log-val").innerHTML = msg; }
+function start() { run = true; updateLog("Bot Started..."); loop(); }
+function stop() { run = false; updateLog("Bot Stopped."); status_val.innerHTML = "IDLE"; }
 
-//---------------- VOLUME WHALE
-function whale(v){
-let avg=v.slice(-20).reduce((a,b)=>a+b)/20
-return v.at(-1)>avg*2
-}
-
-//---------------- STRUCTURE
-function structure(c){
-let l=c.length
-if(c[l-4]>c[l-3]&&c[l-1]>c[l-2])return"buy"
-if(c[l-4]<c[l-3]&&c[l-1]<c[l-2])return"sell"
-return null
-}
-
-//---------------- AI PREDICTOR
-function aiScore(c){
-let momentum=c.at(-1)-c.at(-5)
-let volatility=Math.max(...c.slice(-20))-Math.min(...c.slice(-20))
-return (momentum/volatility)*100
-}
-
-//---------------- DRAW PRICE
-function draw(data){
-let ctx=chart.getContext("2d")
-ctx.clearRect(0,0,900,300)
-let max=Math.max(...data)
-let min=Math.min(...data)
-data.forEach((v,i)=>{
-let x=i*(900/data.length)
-let y=300-(v-min)/(max-min)*300
-ctx.fillRect(x,y,2,2)
-})
-}
-
-//---------------- EQUITY GRAPH
-function drawEq(){
-let ctx=equityCanvas.getContext("2d")
-ctx.clearRect(0,0,900,150)
-let max=Math.max(...equity)
-let min=Math.min(...equity)
-equity.forEach((v,i)=>{
-let x=i*(900/equity.length)
-let y=150-(v-min)/(max-min)*150
-ctx.fillRect(x,y,2,2)
-})
-}
-
-//---------------- LOOP
-async function loop(){
-if(!run)return
-
-let raw=await candles()
-let closes=raw.map(x=>+x[4])
-let vols=raw.map(x=>+x[5])
-let price=closes.at(-1)
-
-draw(closes)
-
-let reg=regime(closes)
-let str=structure(closes)
-let sw=sweep(closes)
-let whaleSig=whale(vols)
-let ai=aiScore(closes)
-
-let strength=Math.abs(ai).toFixed(1)
-
-panel.innerHTML=
-`Balance ${balance.toFixed(2)} |
-WinRate ${wins+loss?((wins/(wins+loss))*100).toFixed(1):0}% |
-Regime ${reg} |
-AI ${strength}% |
-${whaleSig?"🐋 Whale Activity":""}`
-
-//------ adaptive risk
-let riskPct=risk.value/100
-if(reg=="RANGE") riskPct/=2
-if(whaleSig) riskPct*=1.5
-let size=(balance*riskPct)/price
-
-//------ entry
-if(!pos){
-if(ai>10&&str=="buy") pos={t:"BUY",e:price,s:size}
-if(ai<-10&&str=="sell") pos={t:"SELL",e:price,s:size}
-}
-
-//------ exit
-else{
-let pnl=(price-pos.e)*(pos.t=="BUY"?1:-1)*pos.s
-
-let tp=Math.abs(ai)*2
-let sl=tp/2
-
-if(pnl>tp||pnl<-sl){
-balance+=pnl
-equity.push(balance)
-drawEq()
-pnl>0?wins++:loss++
-pos=null
-}
-}
-
-setTimeout(loop,2500)
-}
-
-//---------------- CONTROL
-function start(){run=true;loop()}
-function stop(){run=false}
-
-let chart=document.getElementById("chart")
-let equityCanvas=document.getElementById("equity")
-let symbol=document.getElementById("symbol")
-let tf=document.getElementById("tf")
-let panel=document.getElementById("panel")
+let bal_val = document.getElementById("bal-val");
+let wr_val = document.getElementById("wr-val");
+let status_val = document.getElementById("status-val");
 </script>
 </body>
 </html>
